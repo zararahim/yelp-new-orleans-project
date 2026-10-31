@@ -6,7 +6,7 @@ This repository contains my work for Steps 1 and 2 of the Yelp New Orleans Resta
 
 ## View the Report
 
-**[View the rendered HTML report](yelp_new_orleans_project.html)**
+[View the rendered HTML report](https://zararahim.github.io/yelp-new-orelans-project/)
 
 The report documents the process used to:
 
