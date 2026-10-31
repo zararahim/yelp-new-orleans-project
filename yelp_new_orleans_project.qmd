@@ -1,0 +1,146 @@
+---
+title: "Yelp New Orleans Restaurant Analysis"
+format: html
+editor: visual
+---
+
+## Homework 5: Steps 1 and 2
+
+This project uses the Yelp Open Dataset to analyze restaurants in New Orleans. For this stage of the project, I imported the Yelp business and review JSON files, kept the variables needed for the project, and filtered the business data to restaurants in New Orleans.
+
+## Step 1: Import the Large JSON Files
+
+I downloaded the Yelp Open Dataset from the official Yelp Open Dataset page. I used the following two files:
+
+- `yelp_academic_dataset_business.json`
+- `yelp_academic_dataset_review.json`
+
+The files are stored locally in `data/raw/`. Because the raw Yelp files are very large, `data/raw/` is included in `.gitignore` so the files are not uploaded to GitHub.
+
+The following code imports the two JSON files and keeps only the variables needed for the project.
+
+```{r}
+#| eval: false
+
+library(tidyverse)
+library(jsonlite)
+
+business_file <- "data/raw/yelp_academic_dataset_business.json"
+review_file <- "data/raw/yelp_academic_dataset_review.json"
+
+business_raw <- jsonlite::stream_in(
+  file(business_file),
+  verbose = FALSE
+)
+
+business <- business_raw |>
+  select(
+    business_id, name, address, city, state, postal_code,
+    latitude, longitude, stars, review_count, categories
+  )
+
+review_raw <- jsonlite::stream_in(
+  file(review_file),
+  verbose = FALSE
+)
+
+reviews <- review_raw |>
+  select(
+    business_id, user_id, stars, date, text,
+    useful, funny, cool
+  )
+```
+
+I successfully imported 150,346 businesses and retained 11 business variables. I also imported 6,990,280 reviews and retained 8 review variables.
+
+## Step 2: Clean and Filter to New Orleans Restaurants
+
+The complete Yelp business dataset contains many types of businesses from many cities. I defined a New Orleans restaurant as a business where the state is Louisiana (`LA`), the city is listed as `New Orleans`, and the Yelp categories field contains `Restaurants`.
+
+The following code was used to create the New Orleans restaurant subset.
+
+```{r}
+#| eval: false
+
+new_orleans_restaurants <- business |>
+  filter(
+    state == "LA",
+    city == "New Orleans",
+    !is.na(categories),
+    str_detect(
+      categories,
+      regex("Restaurants", ignore_case = TRUE)
+    )
+  ) |>
+  mutate(
+    postal_code = na_if(postal_code, ""),
+    categories = str_squish(categories),
+    business_name = str_squish(name)
+  ) |>
+  distinct(business_id, .keep_all = TRUE)
+
+new_orleans_restaurants |>
+  summarise(
+    number_of_restaurants = n(),
+    missing_latitude = sum(is.na(latitude)),
+    missing_longitude = sum(is.na(longitude)),
+    missing_categories = sum(is.na(categories))
+  )
+```
+
+After filtering and cleaning the data, 2,259 New Orleans restaurants remained. The filtered data contained 0 missing latitude values, 0 missing longitude values, and 0 missing category values.
+
+## Save the Filtered Data as an RDS File
+
+Because the original Yelp files are very large, I saved the filtered New Orleans restaurant data as a compressed RDS file. This allows the smaller dataset to be loaded directly during later stages of the project without importing the complete business JSON file again.
+
+```{r}
+#| eval: false
+
+dir.create(
+  "data/new_orleans",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+saveRDS(
+  new_orleans_restaurants,
+  "data/new_orleans/business_new_orleans.rds",
+  compress = "xz"
+)
+
+new_orleans_restaurants_loaded <- readRDS(
+  "data/new_orleans/business_new_orleans.rds"
+)
+```
+
+The filtered dataset is saved at:
+
+`data/new_orleans/business_new_orleans.rds`
+
+
+## Verify the Saved New Orleans Data
+
+The saved RDS file can be loaded directly without importing the complete Yelp dataset again.
+
+```{r}
+library(tidyverse)
+
+new_orleans_restaurants_loaded <- readRDS(
+  "data/new_orleans/business_new_orleans.rds"
+)
+
+new_orleans_restaurants_loaded |>
+  summarise(
+    number_of_restaurants = n(),
+    missing_latitude = sum(is.na(latitude)),
+    missing_longitude = sum(is.na(longitude)),
+    missing_categories = sum(is.na(categories))
+  )
+```
+
+## Large-Data Management
+
+The Yelp Open Dataset contains very large JSON files, particularly the review database. I stored the raw JSON files locally in `data/raw/` and excluded this folder from GitHub using `.gitignore`. I also retained only the columns needed for the project to reduce the amount of data being used.
+
+The review dataset contained 6,990,280 observations and took substantially longer to import than the business dataset. After filtering the business data, I saved the smaller New Orleans restaurant dataset as a compressed RDS file so the full business JSON file does not need to be imported repeatedly.
