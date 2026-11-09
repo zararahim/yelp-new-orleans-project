@@ -4,7 +4,7 @@
 
 This repository contains my work for Steps 1 and 2 of the Yelp New Orleans Restaurant Analysis project.
 
-### [View the Full Report](https://zararahim.github.io/yelp-new-orelans-project/)
+### [View the Full Report](https://zararahim.github.io/yelp-new-orleans-project/)
 
 ## Overview
 
