@@ -17,9 +17,10 @@ editor: visual
 library(tidyverse)
 library(jsonlite)
 library(knitr)
+library(sf)
 ```
 
-This project uses the Yelp Open Dataset to analyze restaurants in New Orleans. These steps import the business and review files, keep only the variables the project needs, and filter the business data to New Orleans restaurants.
+For the first steps, I imported the business and review files, keeping only the variables the project needs, and filtering the business data to New Orleans restaurants.
 
 ### Step 1: Import the Large JSON Files
 
@@ -135,3 +136,343 @@ At this stage, the project has two levels of data. The full Yelp business file c
 The map above is a quick check on the filter. Every point should fall inside the New Orleans area. A point far outside the city would suggest the filter let in businesses from other places.
 
 These results give us a clean base for the next steps. Because the filtered restaurants all have coordinates, we can map and compare them across the city. Because the reviews are linked to businesses by `business_id`, we can later ask how restaurant ratings relate to review activity.
+
+### Step 3: Select Related Restaurant Categories
+
+Yelp stores each business's categories as one comma-separated text field. I split that field so each business has one row per category, then counted how often each category appears.
+
+```{r}
+#| label: category-counts
+
+restaurants <- readRDS("data/new_orleans/business_new_orleans.rds")
+
+restaurant_categories <- restaurants |>
+  select(business_id, categories) |>
+  separate_rows(categories, sep = ",") |>
+  mutate(category = str_to_lower(str_squish(categories))) |>
+  filter(category != "") |>
+  distinct(business_id, category)
+
+restaurant_categories |>
+  count(category, sort = TRUE) |>
+  head(30) |>
+  kable()
+```
+
+The most common categories, such as "restaurants" and "food," are too broad to answer the question. After those, the most common specific categories are cajun/creole (401 restaurants), breakfast & brunch (367), sandwiches (354), and seafood (331). Seafood is about 15% of the 2,259 restaurants, which is common enough to analyze but not so common that it describes the whole city.
+
+#### Which categories appear together
+
+```{r}
+#| label: category-pairs
+
+category_pairs <- restaurant_categories |>
+  inner_join(restaurant_categories, by = "business_id", relationship = "many-to-many") |>
+  filter(category.x < category.y) |>
+  count(category.x, category.y, sort = TRUE)
+
+category_pairs |>
+  head(15) |>
+  kable()
+```
+
+The broadest pairs, such as food with restaurants, don't tell us much. The next table looks only at pairs that include seafood.
+
+```{r}
+#| label: seafood-pairs
+
+category_pairs |>
+  filter(category.x == "seafood" | category.y == "seafood") |>
+  head(10) |>
+  kable()
+```
+
+#### Selected categories and inclusion rule
+
+I selected `seafood` and `oyster bars` because both describe places built around seafood, which is closely tied to New Orleans' food identity. I included a restaurant if it belongs to at least one of these categories.
+
+```{r}
+#| label: selected-restaurants
+
+selected_categories <- c("seafood", "oyster bars")
+
+selected_category_businesses <- restaurant_categories |>
+  filter(category %in% selected_categories) |>
+  distinct(business_id)
+
+selected_restaurants <- restaurants |>
+  semi_join(selected_category_businesses, by = "business_id")
+
+selected_restaurants |>
+  summarise(number_of_restaurants = n())
+```
+
+### Step 4: Join Businesses to Reviews
+
+The review file has about 6.99 million reviews, so loading all of it into memory at once is slow and uses a lot of memory. Instead, I read the review file in pages and keep only reviews for the selected seafood restaurants before anything else. This keeps the join small and makes the rest of the analysis easier to run.
+
+```{r}
+#| eval: false
+
+selected_ids <- selected_category_businesses$business_id
+
+kept_pages <- list()
+
+keep_selected_reviews <- function(page) {
+  kept_pages[[length(kept_pages) + 1]] <<- page |>
+    filter(business_id %in% selected_ids) |>
+    select(business_id, user_id, stars, date, text, useful, funny, cool)
+}
+
+review_con <- file("data/raw/yelp_academic_dataset_review.json", open = "r")
+stream_in(review_con, handler = keep_selected_reviews, pagesize = 50000, verbose = FALSE)
+close(review_con)
+
+reviews_selected <- bind_rows(kept_pages)
+
+dir.create("data/new_orleans", recursive = TRUE, showWarnings = FALSE)
+saveRDS(reviews_selected, "data/new_orleans/reviews_selected.rds", compress = "xz")
+```
+
+To check the saved reviews and join them to the restaurants:
+
+```{r}
+#| label: join-reviews
+
+reviews_selected <- readRDS("data/new_orleans/reviews_selected.rds")
+
+restaurant_reviews <- reviews_selected |>
+  inner_join(
+    selected_restaurants |>
+      select(business_id, business_name, business_stars = stars),
+    by = "business_id"
+  )
+
+restaurant_reviews |>
+  summarise(
+    number_of_reviews = n(),
+    restaurants_with_reviews = n_distinct(business_id)
+  ) |>
+  kable()
+```
+
+The join uses business_id, which links each review to one restaurant. Of the 331 selected restaurants, all have at least one review in the file, so no restaurant is dropped at the join. This gives 144,026 reviews to use in the rest of the analysis.
+
+```{r}
+#| label: restaurants-without-reviews
+
+selected_restaurants |>
+  filter(!business_id %in% restaurant_reviews$business_id) |>
+  summarise(restaurants_without_reviews = n()) |>
+  kable()
+```
+
+### Step 5: Add an Official Boundary with a Spatial Join
+
+Yelp gives each restaurant a latitude and longitude, which is a point. Census place boundaries are polygons. A spatial join assigns each point to the polygon that contains it. This gives an independent city label that I can compare with Yelp's `city` field.
+
+```{r}
+#| label: spatial-join-place
+
+places_map <- readRDS("data/boundaries/places_la.rds") |>
+  st_transform(4326)
+
+restaurant_points <- selected_restaurants |>
+  filter(!is.na(longitude), !is.na(latitude)) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+restaurants_with_place <- restaurant_points |>
+  st_join(
+    places_map |> select(GEOID, place_name = NAME),
+    join = st_within,
+    left = TRUE
+  )
+
+city_check <- restaurants_with_place |>
+  st_drop_geometry() |>
+  mutate(agrees = !is.na(place_name) & city == place_name)
+
+city_check |>
+  count(agrees) |>
+  kable()
+```
+
+The next table shows the mismatches, which I investigated rather than removed.
+
+```{r}
+#| label: city-place-mismatch
+
+city_check |>
+  filter(!agrees) |>
+  count(city, place_name, sort = TRUE) |>
+  head(10) |>
+  kable()
+```
+
+Eleven restaurants have New Orleans as their Yelp city but fall inside neighboring places, such as Harahan, Jefferson, Metairie, and Harvey. These are likely businesses with New Orleans mailing addresses that sit just outside the city limits. I kept them in the analysis, but they do not appear on the New Orleans boundary map below.
+
+```{r}
+#| label: fig-nola-map
+#| fig-cap: "Seafood and oyster bar restaurants inside the New Orleans city boundary, colored by Yelp stars."
+
+nola_boundary <- places_map |>
+  filter(NAME == "New Orleans")
+
+nola_points <- restaurants_with_place |>
+  filter(place_name == "New Orleans")
+
+ggplot() +
+  geom_sf(data = nola_boundary, fill = "grey95", color = "grey35") +
+  geom_sf(data = nola_points, aes(color = stars), alpha = 0.7, size = 1.5) +
+  scale_color_gradient(low = "#c6dbef", high = "#08306b", limits = c(1, 5)) +
+  labs(color = "Business\nstars") +
+  theme_minimal()
+```
+
+### Step 6: Compare Two Geographic Systems
+
+I compared two geographic systems: ZIP Code Tabulation Areas (ZCTAs) from the 2010 Census, and census tracts in Orleans Parish. For each system, I assigned every restaurant to an area with a spatial join, then counted the restaurants and calculated their average stars.
+
+```{r}
+#| label: geography-compare
+
+orleans_tracts <- readRDS("data/boundaries/tracts_orleans.rds") |>
+  st_transform(4326)
+
+la_zctas <- readRDS("data/boundaries/zctas_la.rds") |>
+  st_transform(4326)
+
+tract_join <- restaurant_points |>
+  st_join(orleans_tracts |> select(area = GEOID), join = st_within, left = TRUE)
+
+zcta_join <- restaurant_points |>
+  st_join(la_zctas |> select(area = ZCTA5CE10), join = st_within, left = TRUE)
+
+geo_summary <- function(joined, system_name) {
+  matched <- joined |>
+    st_drop_geometry() |>
+    filter(!is.na(area))
+
+  per_area <- matched |>
+    group_by(area) |>
+    summarise(restaurants = n(), .groups = "drop")
+
+  tibble(
+    geographic_system = system_name,
+    areas_with_restaurants = nrow(per_area),
+    restaurants_assigned = sum(per_area$restaurants),
+    unmatched_restaurants = sum(is.na(joined$area)),
+    smallest_area_count = min(per_area$restaurants),
+    largest_area_count = max(per_area$restaurants),
+    areas_with_fewer_than_5 = sum(per_area$restaurants < 5),
+    average_stars = round(mean(matched$stars, na.rm = TRUE), 2)
+  )
+}
+
+comparison_table <- bind_rows(
+  geo_summary(zcta_join, "ZCTAs (2010)"),
+  geo_summary(tract_join, "Census tracts (Orleans Parish)")
+)
+
+comparison_table |>
+  kable()
+```
+
+The tract system only covers Orleans Parish, so the 11 restaurants in neighboring places are unmatched there. The ZCTA system matches all 331 restaurants.
+
+```{r}
+#| label: area-stats
+
+tract_area_stats <- tract_join |>
+  st_drop_geometry() |>
+  filter(!is.na(area)) |>
+  group_by(area) |>
+  summarise(restaurants = n(), avg_stars = mean(stars, na.rm = TRUE), .groups = "drop")
+
+zcta_area_stats <- zcta_join |>
+  st_drop_geometry() |>
+  filter(!is.na(area)) |>
+  group_by(area) |>
+  summarise(restaurants = n(), avg_stars = mean(stars, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+#| label: area-table
+
+zcta_area_stats |>
+  arrange(desc(restaurants)) |>
+  head(10) |>
+  kable(digits = 2, col.names = c("ZCTA", "Restaurants", "Average stars"))
+```
+
+```{r}
+#| label: fig-zcta-choropleth
+#| fig-cap: "Average Yelp stars by ZIP Code Tabulation Area (2010). Only ZCTAs with at least one selected restaurant are shown."
+
+la_zctas |>
+  inner_join(zcta_area_stats, by = c("ZCTA5CE10" = "area")) |>
+  ggplot() +
+  geom_sf(aes(fill = avg_stars), color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "#c6dbef", high = "#08306b", limits = c(1, 5)) +
+  coord_sf(xlim = c(-90.3, -89.5), ylim = c(29.8, 30.3), expand = FALSE) +
+  labs(fill = "Average stars") +
+  theme_minimal()
+```
+
+```{r}
+#| label: fig-tract-choropleth
+#| fig-cap: "Average Yelp stars by census tract in Orleans Parish. Gray tracts have no selected restaurants."
+
+orleans_tracts |>
+  left_join(tract_area_stats, by = c("GEOID" = "area")) |>
+  ggplot() +
+  geom_sf(aes(fill = avg_stars), color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "#c6dbef", high = "#08306b", limits = c(1, 5), na.value = "grey90") +
+  labs(fill = "Average stars") +
+  theme_minimal()
+```
+
+```{r}
+#| label: fig-area-compare
+#| fig-cap: "Restaurants per area under each system. Most tracts have only a few restaurants, so their averages are less reliable."
+
+bind_rows(
+  tract_area_stats |> mutate(system = "Census tracts"),
+  zcta_area_stats |> mutate(system = "ZCTAs (2010)")
+) |>
+  ggplot(aes(x = system, y = restaurants)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  labs(x = NULL, y = "Restaurants per area") +
+  theme_minimal()
+```
+
+These averages use Yelp's raw star ratings. The reviewer-adjusted averages for each area will be added in Step 7, after the reviewer baselines are calculated.
+
+### Choosing the geographic area
+
+I compared the two systems on the criteria the assignment asks for:
+
+- **Unmatched restaurants:** Census tracts leave 11 restaurants unmatched, because they only cover Orleans Parish. The ZIP areas match all 331 restaurants.
+- **Restaurants per area:** Tracts divide the 320 matched restaurants into 89 areas, averaging about 3.6 per area. ZIP areas divide the 331 restaurants into 21 areas, averaging about 15.8 per area. The comparison plot shows that most tracts have very few restaurants.
+- **Stability:** An average from one to four restaurants can change a lot with a single review. Larger areas give more stable averages.
+- **Understandability:** Most readers know ZIP codes, which helps when the question is where someone should go for seafood.
+- **Documentation:** The ZIP areas are ZCTAs from the 2010 Census. They approximate ZIP codes, but they are not exact ZIP boundaries and they are not neighborhoods.
+
+For the main analysis, I selected ZIP Code Tabulation Areas. Census tracts are included as a finer check. Tracts show more detail, but with so few restaurants per tract, most tract averages are too unstable to rank.
+
+The choice has limits. A ZIP area can cover both busy commercial streets and quiet residential blocks, so it hides differences inside the area. It also says nothing about neighborhood identity. The tract map shows that restaurants cluster in a few central tracts, a pattern the ZIP map cannot show.
+
+### Large-Data Management
+
+The Yelp review file contains about 6.99 million reviews and is too large to load into memory at once. Loading the full file with a single `stream_in()` call would use more memory than my computer could comfortably handle, and it would slow down every later step. I handled this in four ways.
+
+**Downloading and storage.** The raw JSON files are stored in `data/raw/`, which is listed in `.gitignore` so they are never uploaded to GitHub. Anyone reproducing the project needs to download the Yelp Open Dataset separately and place the files in that folder.
+
+**Reading in pages.** Instead of loading the whole review file, I read it in pages of 50,000 records. For each page, I kept only the reviews for the selected seafood restaurants and discarded the rest before moving on. This reduced about 6.99 million reviews to 144,026 reviews.
+
+**Keeping only needed columns.** For both the business and review files, I kept only the variables the project uses. The business file went from many columns to 11, and the review file to 8.
+
+**Saving intermediate results.** The filtered restaurants and the filtered reviews are saved as compressed `.rds` files in `data/new_orleans/`. Later steps load these smaller files directly, so the full JSON files only need to be read once.
+
+**Problems I ran into.** The review extraction took [about X minutes] on my computer, and R did not show progress while it ran, so I checked that it was still working using Activity Monitor. Some boundary files also failed to download at first. The ZIP Code Tabulation Area download did not accept the 2020 year for a single state, so I used the 2010 files instead. Once all files were saved locally, the report renders from the saved files without reading the raw JSON again.
