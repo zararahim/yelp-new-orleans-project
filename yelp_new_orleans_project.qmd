@@ -3,23 +3,32 @@ title: "Yelp New Orleans Restaurant Analysis"
 format:
   html:
     embed-resources: true
+    code-overflow: wrap
+    code-fold: true
+    code-summary: "Show code"
+    toc: true
+    theme: cosmo
 editor: visual
 ---
 
-## Homework 5: Steps 1 and 2
+```{r}
+#| include: false
 
-This project uses the Yelp Open Dataset to analyze restaurants in New Orleans. For this stage of the project, I imported the Yelp business and review JSON files, kept the variables needed for the project, and filtered the business data to restaurants in New Orleans.
+library(tidyverse)
+library(jsonlite)
+library(knitr)
+```
 
-## Step 1: Import the Large JSON Files
+This project uses the Yelp Open Dataset to analyze restaurants in New Orleans. These steps import the business and review files, keep only the variables the project needs, and filter the business data to New Orleans restaurants.
 
-I downloaded the Yelp Open Dataset from the official Yelp Open Dataset page. I used the following two files:
+### Step 1: Import the Large JSON Files
+
+The Yelp Open Dataset is distributed as large JSON files. This project uses two of them:
 
 - `yelp_academic_dataset_business.json`
 - `yelp_academic_dataset_review.json`
 
-The files are stored locally in `data/raw/`. Because the raw Yelp files are very large, `data/raw/` is included in `.gitignore` so the files are not uploaded to GitHub.
-
-The following code imports the two JSON files and keeps only the variables needed for the project.
+The files are stored locally in `data/raw/`. They are too large for GitHub, so the folder is listed in `.gitignore`. The code below is shown but not run during rendering, because the raw files are not part of the repository.
 
 ```{r}
 #| eval: false
@@ -27,39 +36,35 @@ The following code imports the two JSON files and keeps only the variables neede
 library(tidyverse)
 library(jsonlite)
 
-business_file <- "data/raw/yelp_academic_dataset_business.json"
-review_file <- "data/raw/yelp_academic_dataset_review.json"
-
-business_raw <- jsonlite::stream_in(
-  file(business_file),
-  verbose = FALSE
-)
+business_raw <- stream_in(file("data/raw/yelp_academic_dataset_business.json"), verbose = FALSE)
 
 business <- business_raw |>
-  select(
-    business_id, name, address, city, state, postal_code,
-    latitude, longitude, stars, review_count, categories
-  )
+  select(business_id, name, address, city, state, postal_code,
+         latitude, longitude, stars, review_count, categories)
 
-review_raw <- jsonlite::stream_in(
-  file(review_file),
-  verbose = FALSE
-)
+review_raw <- stream_in(file("data/raw/yelp_academic_dataset_review.json"), verbose = FALSE)
 
 reviews <- review_raw |>
-  select(
-    business_id, user_id, stars, date, text,
-    useful, funny, cool
-  )
+  select(business_id, user_id, stars, date, text, useful, funny, cool)
 ```
 
-I successfully imported 150,346 businesses and retained 11 business variables. I also imported 6,990,280 reviews and retained 8 review variables.
+```{r}
+#| label: tbl-sizes
+#| tbl-cap: "Size of the imported Yelp datasets"
 
-## Step 2: Clean and Filter to New Orleans Restaurants
+tibble(
+  Dataset = c("Business", "Review"),
+  Rows = c("150,346", "6,990,280"),
+  `Variables kept` = c(11, 8)
+) |>
+  kable()
+```
 
-The complete Yelp business dataset contains many types of businesses from many cities. I defined a New Orleans restaurant as a business where the state is Louisiana (`LA`), the city is listed as `New Orleans`, and the Yelp categories field contains `Restaurants`.
+The import produced 150,346 businesses, and I kept 11 business variables. It also produced 6,990,280 reviews, and I kept 8 review variables.
 
-The following code was used to create the New Orleans restaurant subset.
+### Step 2: Filter to New Orleans Restaurants
+
+The full business file includes many types of businesses from many cities. A New Orleans restaurant is defined as a business in Louisiana (`LA`), in the city of New Orleans, with `Restaurants` in its Yelp categories.
 
 ```{r}
 #| eval: false
@@ -69,10 +74,7 @@ new_orleans_restaurants <- business |>
     state == "LA",
     city == "New Orleans",
     !is.na(categories),
-    str_detect(
-      categories,
-      regex("Restaurants", ignore_case = TRUE)
-    )
+    str_detect(categories, regex("Restaurants", ignore_case = TRUE))
   ) |>
   mutate(
     postal_code = na_if(postal_code, ""),
@@ -90,59 +92,46 @@ new_orleans_restaurants |>
   )
 ```
 
-After filtering and cleaning the data, 2,259 New Orleans restaurants remained. The filtered data contained 0 missing latitude values, 0 missing longitude values, and 0 missing category values.
+After filtering and cleaning, 2,259 New Orleans restaurants remained, with no missing latitude, longitude, or category values.
 
-## Save the Filtered Data as an RDS File
+### Save the Filtered Data
 
-Because the original Yelp files are very large, I saved the filtered New Orleans restaurant data as a compressed RDS file. This allows the smaller dataset to be loaded directly during later stages of the project without importing the complete business JSON file again.
+The filtered data is saved as a compressed RDS file. Later steps can load this smaller file directly, without importing the full business JSON again.
 
 ```{r}
 #| eval: false
 
-dir.create(
-  "data/new_orleans",
-  recursive = TRUE,
-  showWarnings = FALSE
-)
+dir.create("data/new_orleans", recursive = TRUE, showWarnings = FALSE)
 
-saveRDS(
-  new_orleans_restaurants,
-  "data/new_orleans/business_new_orleans.rds",
-  compress = "xz"
-)
-
-new_orleans_restaurants_loaded <- readRDS(
-  "data/new_orleans/business_new_orleans.rds"
-)
+saveRDS(new_orleans_restaurants, "data/new_orleans/business_new_orleans.rds", compress = "xz")
 ```
 
-The filtered dataset is saved at:
-
-`data/new_orleans/business_new_orleans.rds`
-
-
-## Verify the Saved New Orleans Data
-
-The saved RDS file can be loaded directly without importing the complete Yelp dataset again.
+To check the saved file, load it and repeat the summary:
 
 ```{r}
-library(tidyverse)
-
-new_orleans_restaurants_loaded <- readRDS(
-  "data/new_orleans/business_new_orleans.rds"
-)
+#| label: check-saved
+new_orleans_restaurants_loaded <- readRDS("data/new_orleans/business_new_orleans.rds")
 
 new_orleans_restaurants_loaded |>
-  summarise(
-    number_of_restaurants = n(),
-    missing_latitude = sum(is.na(latitude)),
-    missing_longitude = sum(is.na(longitude)),
-    missing_categories = sum(is.na(categories))
-  )
+  summarise(number_of_restaurants = n())
 ```
 
-## Large-Data Management
+```{r}
+#| label: fig-map
+#| fig-cap: "Locations of the 2,259 New Orleans restaurants after filtering."
 
-The Yelp Open Dataset contains very large JSON files, particularly the review database. I stored the raw JSON files locally in `data/raw/` and excluded this folder from GitHub using `.gitignore`. I also retained only the columns needed for the project to reduce the amount of data being used.
+new_orleans_restaurants_loaded |>
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_point(alpha = 0.4, size = 1, color = "#2c7fb8") +
+  coord_quickmap() +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_minimal()
+```
 
-The review dataset contained 6,990,280 observations and took substantially longer to import than the business dataset. After filtering the business data, I saved the smaller New Orleans restaurant dataset as a compressed RDS file so the full business JSON file does not need to be imported repeatedly.
+### What the Data Shows So Far
+
+At this stage, the project has two levels of data. The full Yelp business file contains 150,346 businesses, and the review file contains 6,990,280 reviews. After filtering, 2,259 businesses remain as New Orleans restaurants, and each one has a complete location and category.
+
+The map above is a quick check on the filter. Every point should fall inside the New Orleans area. A point far outside the city would suggest the filter let in businesses from other places.
+
+These results give us a clean base for the next steps. Because the filtered restaurants all have coordinates, we can map and compare them across the city. Because the reviews are linked to businesses by `business_id`, we can later ask how restaurant ratings relate to review activity.
