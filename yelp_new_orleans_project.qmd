@@ -1,6 +1,8 @@
 ---
 title: "Yelp New Orleans Restaurant Analysis"
-format: html
+format:
+  html:
+    embed-resources: true
 editor: visual
 ---
 
